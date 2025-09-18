@@ -1,0 +1,4 @@
+# Node / tooling (not required here, but future-proof)
+node_modules/
+.DS_Store
+dist/
