@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover"/>
+<title>Skater — Bright Skybox (Centered)</title>
+<style>
+  html,body{margin:0;height:100%;background:#fff;overscroll-behavior:none;}
+  #app{position:fixed;inset:0}
+  .hint{position:fixed;left:0;right:0;bottom:0;color:#000;background:linear-gradient(180deg,transparent,rgba(255,255,255,.85));
+        font:600 12px/1.2 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+        text-align:center;padding:10px env(safe-area-inset-bottom) 14px;letter-spacing:.2px}
+  .btns{position:fixed;right:8px;top:8px;display:flex;gap:8px;z-index:3}
+  .btn{background:rgba(255,255,255,.9);border:1px solid rgba(0,0,0,.2);color:#000;border-radius:10px;padding:8px 10px;
+       font:600 12px/1 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+  #log{position:fixed;left:8px;bottom:8px;color:#060;background:rgba(255,255,255,.9);font:11px/1.2 ui-monospace,Menlo,Consolas,monospace;
+       padding:6px 8px;border-radius:8px;max-width:70vw;white-space:pre-wrap}
+</style>
+</head>
+<body>
+<canvas id="app"></canvas>
+<div class="btns">
+  <button class="btn" id="pause">Pause</button>
+  <button class="btn" id="recenter">Recenter</button>
+  <button class="btn" id="reset">Reset Cam</button>
+</div>
+<div class="hint">Bright skybox • Drag = orbit • Pinch = zoom • Double‑tap = pause/play</div>
+<div id="log"></div>
+
+<!-- UMD build (no modules) -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+<script>
+(function(){
+  const logEl = document.getElementById('log');
+  const log = (m)=>{ logEl.textContent = m; };
+
+  try{
+    const canvas = document.getElementById('app');
+    const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio||1, 2));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 2000);
+
+    // --- Bright skybox (solid white) ---
+    (function(){
+      const loader = new THREE.CubeTextureLoader();
+      const data = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Zs7M7cAAAAASUVORK5CYII=";
+      const cubemap = loader.load([data,data,data,data,data,data], ()=>log('✅ Skybox loaded'));
+      cubemap.colorSpace = THREE.SRGBColorSpace;
+      scene.background = cubemap;
+    })();
+
+    // Simple orbit controls with target setters
+    const controls = (function(){
+      let theta = 0.6, phi = 0.9, radius = 10;
+      let target = new THREE.Vector3(0,1.4,0);
+      const state = {dragging:false, lastDist:0};
+
+      function updateCam(){
+        const x = target.x + radius*Math.sin(phi)*Math.cos(theta);
+        const y = target.y + radius*Math.cos(phi);
+        const z = target.z + radius*Math.sin(phi)*Math.sin(theta);
+        camera.position.set(x,y,z);
+        camera.lookAt(target);
+      }
+      updateCam();
+
+      function pointerDown(e){
+        state.dragging = true;
+        const ts = e.touches? Array.from(e.touches): [e];
+        if(ts.length===2){
+          const dx = ts[0].clientX - ts[1].clientX;
+          const dy = ts[0].clientY - ts[1].clientY;
+          state.lastDist = Math.hypot(dx,dy);
+        }
+        state.prev = ts[0];
+      }
+      function pointerMove(e){
+        if(!state.dragging) return;
+        const ts = e.touches? Array.from(e.touches): [e];
+        if(ts.length===1){
+          const t = ts[0];
+          if(state.prev){
+            const dx = (t.clientX - state.prev.clientX)/window.innerWidth;
+            const dy = (t.clientY - state.prev.clientY)/window.innerHeight;
+            theta -= dx*3.5;
+            phi   -= dy*2.0;
+            phi = Math.max(0.2, Math.min(Math.PI-0.2, phi));
+            updateCam();
+          }
+          state.prev = {clientX:t.clientX, clientY:t.clientY};
+        }else if(ts.length===2){
+          const dx = ts[0].clientX - ts[1].clientX;
+          const dy = ts[0].clientY - ts[1].clientY;
+          const dist = Math.hypot(dx,dy);
+          if(state.lastDist){
+            const delta = dist - state.lastDist;
+            radius *= (1 - delta/600);
+            radius = Math.max(4, Math.min(20, radius));
+            updateCam();
+          }
+          state.lastDist = dist;
+        }
+      }
+      function pointerUp(){ state.dragging=false; state.prev=null; state.lastDist=0; }
+
+      window.addEventListener('touchstart', pointerDown, {passive:true});
+      window.addEventListener('touchmove', pointerMove, {passive:true});
+      window.addEventListener('touchend', pointerUp, {passive:true});
+      window.addEventListener('mousedown', pointerDown);
+      window.addEventListener('mousemove', pointerMove);
+      window.addEventListener('mouseup', pointerUp);
+
+      // public API
+      return {
+        reset(){ theta=0.6; phi=0.9; radius=10; target.set(0,1.4,0); updateCam(); },
+        setTarget(x,y,z){ target.set(x,y,z); updateCam(); },
+        setRadius(r){ radius = Math.max(3, Math.min(30, r)); updateCam(); },
+        nudge(dx,dy){ target.x += dx; target.y += dy; updateCam(); }
+      };
+    })();
+
+    // Ground
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(60,60),
+      new THREE.MeshStandardMaterial({color:0xeeeeee, metalness:0.6, roughness:0.2})
+    );
+    ground.rotation.x = -Math.PI/2;
+    scene.add(ground);
+
+    // Lights
+    function addLamp(x,z,intensity){
+      const pole = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.05,0.05,3.2,16),
+        new THREE.MeshStandardMaterial({ color: 0x333, metalness:0.6, roughness:0.4 })
+      );
+      pole.position.set(x,1.6,z); scene.add(pole);
+      const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.18, 20, 12),
+        new THREE.MeshStandardMaterial({ color:0xffffff, emissive:0xfff0a0, emissiveIntensity:2.0 }));
+      bulb.position.set(x,3.3,z); scene.add(bulb);
+      const light = new THREE.PointLight(0xfff2b0, intensity, 18, 2);
+      light.position.copy(bulb.position); scene.add(light);
+    }
+    [-3, -1, 1.5, 3.8].forEach((x,i)=> addLamp(x, 1.1 + 0.5*(i%2), 1.6 + i*0.2));
+    scene.add(new THREE.HemisphereLight(0xffffff, 0xdddddd, 0.65));
+
+    // Subject: skater + board grouped for framing
+    const subject = new THREE.Group(); scene.add(subject);
+    const silhouetteMat = new THREE.MeshStandardMaterial({ color: 0x000000, metalness:0.9, roughness:0.25 });
+
+    // Skater
+    const skater = new THREE.Group(); subject.add(skater);
+    const add = (m,p,r=[0,0,0],s=[1,1,1])=>{ m.position.set(p[0],p[1],p[2]); m.rotation.set(r[0],r[1],r[2]); m.scale.set(s[0],s[1],s[2]); skater.add(m); };
+    const rad = (d)=> d*Math.PI/180;
+    add(new THREE.Mesh(new THREE.CapsuleGeometry(0.33,0.95,12,20), silhouetteMat), [0,2.05,0]);
+    add(new THREE.Mesh(new THREE.SphereGeometry(0.26,20,16), silhouetteMat), [0,2.78,0]);
+    add(new THREE.Mesh(new THREE.CapsuleGeometry(0.12,0.7,8,12), silhouetteMat), [-0.78,2.35,-0.08], [0,0,rad(40)]);
+    add(new THREE.Mesh(new THREE.CapsuleGeometry(0.12,0.7,8,12), silhouetteMat), [ 0.78,2.35,-0.08], [0,0,rad(-38)]);
+    add(new THREE.Mesh(new THREE.CapsuleGeometry(0.16,0.65,8,14), silhouetteMat), [-0.30,1.45,0.04], [0,0,rad(72)]);
+    add(new THREE.Mesh(new THREE.CapsuleGeometry(0.16,0.65,8,14), silhouetteMat), [ 0.30,1.45,0.04], [0,0,rad(-70)]);
+    skater.position.y = 1.45;
+
+    // Board
+    const board = new THREE.Group(); subject.add(board);
+    board.add(new THREE.Mesh(new THREE.BoxGeometry(2.0,0.08,0.48), silhouetteMat));
+    function wheel(){ return new THREE.Mesh(new THREE.TorusGeometry(0.09,0.04,10,20), silhouetteMat); }
+    const z=0.20, x=0.60, y=-0.1;
+    [ [-x,y, z],[ x,y, z],[-x,y,-z],[ x,y,-z] ].forEach(p=>{ const w=wheel(); w.position.set(p[0],p[1],p[2]); board.add(w); });
+    board.position.set(0,0.95,0);
+
+    // Auto-center on subject
+    function frameSubject(padding=1.4){
+      const box = new THREE.Box3().setFromObject(subject);
+      const size = new THREE.Vector3(); box.getSize(size);
+      const center = new THREE.Vector3(); box.getCenter(center);
+      center.y += size.y*0.15; // nudge up
+      controls.setTarget(center.x, center.y, center.z);
+      const maxDim = Math.max(size.x, size.y, size.z);
+      controls.setRadius(Math.max(6, maxDim * padding));
+    }
+    frameSubject();
+    document.getElementById('recenter').onclick = ()=> frameSubject();
+    document.getElementById('reset').onclick = ()=> { controls.reset(); frameSubject(); };
+
+    // Pause
+    let playing = true;
+    document.getElementById('pause').onclick = ()=>{ playing = !playing; };
+
+    // Animation
+    const clock = new THREE.Clock();
+    function animate(){
+      requestAnimationFrame(animate);
+      const t = clock.getElapsedTime();
+      if(playing){
+        skater.position.y = 1.45 + Math.sin(t*1.4)*0.16;
+        board.position.y  = 0.95 + Math.sin(t*1.5 + 1.2)*0.12;
+        board.rotation.x  = Math.sin(t*3.2)*0.5;
+        board.rotation.z  = Math.sin(t*2.1 + 1.2)*0.35;
+      }
+      renderer.render(scene, camera);
+    }
+
+    function onResize(){
+      const w = window.innerWidth||320, h = window.innerHeight||480;
+      camera.aspect = w/h; camera.updateProjectionMatrix();
+      renderer.setSize(w,h,false);
+    }
+    window.addEventListener('resize', onResize, {passive:true});
+    onResize();
+    animate();
+    log('✅ Centered & bright');
+  }catch(err){
+    document.getElementById('log').textContent = 'Error: '+err.message;
+    console.error(err);
+  }
+})();
+</script>
+</body>
+</html>

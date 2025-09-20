@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover"/>
+<title>Skater — Final Loader (GLB/FBX + Draco/Meshopt + TGA/KTX2)</title>
+<style>
+  html,body{margin:0;height:100%;background:#fff;overscroll-behavior:none;}
+  #app{position:fixed;inset:0}
+  .hud{position:fixed;left:8px;top:8px;display:flex;gap:8px;flex-wrap:wrap;z-index:3}
+  .btn{--bg: rgba(255,255,255,.95);--fg:#000;--bd: rgba(0,0,0,.2);
+    background:var(--bg); color:var(--fg); border:1px solid var(--bd);
+    border-radius:10px; padding:8px 12px;
+    font:600 12px/1 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+    display:inline-flex; align-items:center; gap:8px; box-shadow:0 1px 2px rgba(0,0,0,.05);
+    user-select:none; cursor:pointer; transition:background .15s, border-color .15s, transform .06s, opacity .15s;}
+  .btn:active{ transform: translateY(1px); }
+  .btn[aria-pressed="true"]{ --bg:#0b5cff; --fg:#fff; --bd:#0b5cff; }
+  .btn[disabled]{ opacity:.5; cursor:not-allowed; }
+  .btn[aria-busy="true"]{ pointer-events:none; opacity:.8; }
+  .spinner{ width:12px;height:12px;border-radius:50%; border:2px solid currentColor;border-top-color:transparent; animation:spin 1s linear infinite;}
+  @keyframes spin{ to{ transform: rotate(360deg);} }
+  .legend{position:fixed;right:8px;top:8px;color:#000;background:rgba(255,255,255,.9);padding:8px 10px;border-radius:10px;
+          font:12px/1.3 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+  #log{position:fixed;left:8px;bottom:8px;color:#060;background:rgba(255,255,255,.95);font:11px/1.2 ui-monospace,Menlo,Consolas,monospace;
+       padding:6px 8px;border-radius:8px;max-width:80vw;white-space:pre-wrap;z-index:3}
+  #toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);background:#111;color:#fff;
+         padding:10px 14px;border-radius:12px;font:600 12px/1 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+         display:none;z-index:4}
+  #file{display:none}
+  .drop{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.25);
+        color:#fff;font:700 20px/1.3 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Helvetica,Arial,sans-serif;z-index:2;border:3px dashed #fff}
+</style>
+</head>
+<body>
+<canvas id="app"></canvas>
+
+<div class="hud">
+  <button class="btn" id="pause" aria-pressed="false">Pause</button>
+  <button class="btn" id="recenter">Recenter</button>
+  <button class="btn" id="toggleBackplate" aria-pressed="false">Backplate</button>
+  <button class="btn" id="toggleSilhouette" aria-pressed="true">Silhouette</button>
+  <button class="btn" id="loadModel"><span class="spinner" style="display:none"></span><span class="label">Load Model…</span></button>
+  <button class="btn" id="loadPicker">Load (Picker API)</button>
+  <button class="btn" id="loadDemo">Load Demo Cube</button>
+  <input id="file" type="file" accept=".glb,.gltf,.fbx,model/gltf-binary,model/gltf+json,application/octet-stream">
+</div>
+<div class="legend">
+  <b>Controls</b><br/>
+  • Left‑drag: <b>Orbit</b> • Wheel: <b>Zoom</b><br/>
+  • Right‑drag / ⌥Alt+Drag: <b>Pan</b><br/>
+  • Middle‑drag / ⌘Cmd+Drag: <b>Tilt (roll)</b><br/>
+  • Double‑click/tap: <b>Pause</b>
+</div>
+<div id="log">Ready.</div>
+<div id="toast"></div>
+<div class="drop" id="drop">Drop GLB/GLTF/FBX here</div>
+
+<!-- Three.js core (UMD) -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+
+<!-- Loaders (UMD) -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/loaders/GLTFLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/loaders/DRACOLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/libs/inflate.min.js"></script>
+script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/loaders/FBXLoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/loaders/TGALoader.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/examples/js/loaders/KTX2Loader.js"></script>
+
+<!-- Meshopt decoder (global MeshoptDecoder Promise) -->
+<script src="https://unpkg.com/meshoptimizer/meshopt_decoder.js"></script>
+
+<script>
+(function(){
+  const $ = (id)=>document.getElementById(id);
+  const logEl = $('log');
+  const toastEl = $('toast');
+  const log = (m)=>{ logEl.textContent = m; console.log(m); };
+  const toast = (m)=>{ toastEl.textContent=m; toastEl.style.display='block'; clearTimeout(toast._t); toast._t=setTimeout(()=>toastEl.style.display='none', 2000); };
+  const setBusy = (btn, busy, labelWhileBusy='Loading…')=>{
+    const spinner = btn.querySelector('.spinner');
+    const label = btn.querySelector('.label');
+    btn.setAttribute('aria-busy', busy ? 'true' : 'false');
+    if(spinner) spinner.style.display = busy ? 'inline-block' : 'none';
+    if(label){ label.dataset.orig = label.dataset.orig || label.textContent; label.textContent = busy ? labelWhileBusy : label.dataset.orig; }
+  };
+  const setPressed = (btn, pressed)=> btn.setAttribute('aria-pressed', pressed ? 'true' : 'false');
+
+  try{
+    // Renderer / scene / camera
+    const canvas = $('app');
+    const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio||1, 2));
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 2000);
+
+    // Bright skybox
+    (function(){
+      const loader = new THREE.CubeTextureLoader();
+      const data = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Zs7M7cAAAAASUVORK5CYII=";
+      const cubemap = loader.load([data,data,data,data,data,data], ()=>log('✅ Skybox loaded'));
+      cubemap.colorSpace = THREE.SRGBColorSpace;
+      scene.background = cubemap;
+    })();
+
+    // Controls
+    const Controls = (function(){
+      let theta = 0.55, phi = 0.95, radius = 10, roll = 0.0;
+      const target = new THREE.Vector3(0,1.4,0);
+      function applyCam(){ const dir = new THREE.Vector3(Math.sin(phi)*Math.cos(theta), Math.cos(phi), Math.sin(phi)*Math.sin(theta)); camera.position.copy(target).addScaledVector(dir, radius); camera.lookAt(target); camera.rotation.z = roll; }
+      applyCam();
+      function orbit(dx, dy){ theta -= dx*2.5; phi -= dy*2.0; phi=Math.max(0.001,Math.min(Math.PI-0.001,phi)); applyCam(); }
+      function pan(dx, dy){ const panSpeed = radius * 0.8; const right = new THREE.Vector3().crossVectors(camera.getWorldDirection(new THREE.Vector3()), new THREE.Vector3(0,1,0)).normalize(); target.addScaledVector(right, -dx*panSpeed); target.addScaledVector(new THREE.Vector3(0,1,0), dy*panSpeed); applyCam(); }
+      function tilt(dz){ roll += dz*2.5; applyCam(); }
+      function dolly(delta){ radius *= (1 + delta); radius = Math.max(3, Math.min(60, radius)); applyCam(); }
+      let state={drag:false,btn:0,alt:false,meta:false,x:0,y:0};
+      function onDown(e){ state={drag:true,btn:e.button,alt:e.altKey,meta:e.metaKey||e.ctrlKey,x:e.clientX,y:e.clientY}; e.preventDefault(); }
+      function onMove(e){ if(!state.drag) return; const dx=(e.clientX-state.x)/window.innerWidth, dy=(e.clientY-state.y)/window.innerHeight; state.x=e.clientX; state.y=e.clientY; if(state.btn===0 && !state.alt && !state.meta){ orbit(dx,dy); } else if(state.btn===2 || state.alt){ pan(dx,dy); } else if(state.btn===1 || state.meta){ tilt(dx); } }
+      function onUp(){ state.drag=false; }
+      function onWheel(e){ e.preventDefault(); dolly(e.deltaY>0?0.12:-0.12); }
+      window.addEventListener('contextmenu', (e)=>e.preventDefault());
+      window.addEventListener('mousedown', onDown);
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+      window.addEventListener('wheel', onWheel, {passive:false});
+      return { setTarget(x,y,z){ target.set(x,y,z); applyCam(); }, setRadius(r){ radius=r; applyCam(); }, reset(){ theta=0.55; phi=0.95; radius=10; roll=0; target.set(0,1.4,0); applyCam(); } };
+    })();
+
+    // Backplate
+    const backplate = new THREE.Group(); scene.add(backplate);
+    (function(){ const url='./assets/reference.png'; const img=new Image(); img.onload=function(){ const tex=new THREE.Texture(img); tex.needsUpdate=true; tex.colorSpace=THREE.SRGBColorSpace; const ratio=img.width/img.height; const h=8, w=h*ratio; const mesh=new THREE.Mesh(new THREE.PlaneGeometry(w,h), new THREE.MeshBasicMaterial({ map: tex, depthWrite:false })); mesh.position.set(0,3.2,-9); backplate.add(mesh); }; img.src=url; })();
+
+    // Lights & ground
+    scene.add(new THREE.HemisphereLight(0xffffff,0xdddddd,0.75));
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(80,80), new THREE.MeshStandardMaterial({ color:0xeeeeee, metalness:0.5, roughness:0.25 })); ground.rotation.x=-Math.PI/2; scene.add(ground);
+
+    // Subject holder
+    const subject = new THREE.Group(); scene.add(subject);
+
+    function frameSubject(padding=1.5){
+      const box = new THREE.Box3().setFromObject(subject);
+      const size = new THREE.Vector3(); box.getSize(size);
+      const center = new THREE.Vector3(); box.getCenter(center);
+      center.y += size.y*0.15;
+      Controls.setTarget(center.x, center.y, center.z);
+      const maxDim = Math.max(size.x, size.y, size.z);
+      Controls.setRadius(Math.max(7, maxDim*padding));
+    }
+
+    // Loaders
+    const draco = new THREE.DRACOLoader(); draco.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
+    const gltfLoader = new THREE.GLTFLoader(); gltfLoader.setDRACOLoader(draco);
+    if(typeof MeshoptDecoder!=='undefined'){ gltfLoader.setMeshoptDecoder(MeshoptDecoder); }
+    const ktx2 = new THREE.KTX2Loader(); ktx2.setTranscoderPath('https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/libs/basis/'); ktx2.detectSupport(renderer); gltfLoader.setKTX2Loader(ktx2);
+    const fbxLoader = new THREE.FBXLoader();
+    const tgaLoader = new THREE.TGALoader(); // used when FBX references TGA textures
+
+    // UI & inputs
+    const drop = $('drop'); const fileInput = $('file'); const btnLoad = $('loadModel'); const btnPicker = $('loadPicker'); const btnDemo = $('loadDemo');
+
+    btnLoad.addEventListener('click', (e)=>{
+      e.preventDefault();
+      setBusy(btnLoad, true, 'Choose file…');
+      fileInput.value='';
+      fileInput.click();
+      // Clear busy if the dialog is cancelled (Safari quirk)
+      setTimeout(()=>{ if(btnLoad.getAttribute('aria-busy')==='true'){ setBusy(btnLoad, false); } }, 3000);
+    });
+
+    btnPicker.addEventListener('click', async ()=>{
+      if(!window.showOpenFilePicker){ toast('Picker API not supported'); return; }
+      try{
+        const [handle] = await showOpenFilePicker({
+          multiple:false,
+          types:[{ description:'3D', accept:{ 'model/gltf-binary':['.glb'], 'model/gltf+json':['.gltf'], 'application/octet-stream':['.fbx','.glb','.gltf'] } }]
+        });
+        const file = await handle.getFile();
+        await handleFile(file);
+      }catch(err){
+        if(err && err.name==='AbortError'){ toast('Cancelled'); } else { console.error(err); toast('Picker failed'); }
+      }
+    });
+
+    fileInput.addEventListener('change', async (e)=>{
+      setBusy(btnLoad, false);
+      const f = e.target.files && e.target.files[0];
+      if(!f){ toast('No file selected'); return; }
+      await handleFile(f);
+    });
+
+    // Drag & drop
+    window.addEventListener('dragover', (e)=>{ e.preventDefault(); drop.style.display='flex'; });
+    window.addEventListener('dragleave', (e)=>{ e.preventDefault(); drop.style.display='none'; });
+    window.addEventListener('drop', async (e)=>{
+      e.preventDefault(); drop.style.display='none';
+      const f = e.dataTransfer.files && e.dataTransfer.files[0];
+      if(f) await handleFile(f);
+    });
+
+    // Demo cube
+    btnDemo.addEventListener('click', ()=>{
+      toast('Loaded demo cube');
+      const g = new THREE.BoxGeometry(1.2,1.2,1.2);
+      const m = new THREE.MeshStandardMaterial({ color: 0x3366ff, metalness:0.5, roughness:0.3 });
+      const mesh = new THREE.Mesh(g,m);
+      mesh.position.set(0,1.2,0);
+      subject.clear(); subject.add(mesh);
+      frameSubject();
+    });
+
+    function setSilhouette(root, force){
+      root.traverse((o)=>{
+        if(o.isMesh && o.material){
+          if(!o.userData._origMat) o.userData._origMat = o.material;
+          o.material = force ? new THREE.MeshStandardMaterial({ color:0x000000, metalness:0.9, roughness:0.2 }) : o.userData._origMat;
+        }
+      });
+    }
+
+    function placeAndFrame(root){
+      subject.clear();
+      subject.add(root);
+      // Normalize / center
+      const box = new THREE.Box3().setFromObject(root);
+      const size = new THREE.Vector3(); box.getSize(size);
+      const center = new THREE.Vector3(); box.getCenter(center);
+      root.position.sub(center);
+      const maxDim = Math.max(size.x, size.y, size.z) || 1.0;
+      root.scale.setScalar(2.5/maxDim);
+      root.position.y += 1.2;
+      // Apply silhouette if toggle is on
+      setSilhouette(subject, $('toggleSilhouette').getAttribute('aria-pressed')==='true');
+      frameSubject();
+    }
+
+    async function handleFile(file){
+      try{
+        toast('Loading '+file.name+' …');
+        const name=(file.name||'').toLowerCase();
+        const ext=name.split('.').pop();
+        const buf=await file.arrayBuffer();
+        if(ext==='glb' || ext==='gltf'){
+          await new Promise((res,rej)=>gltfLoader.parse(buf,'', (gltf)=>{ placeAndFrame(gltf.scene||gltf.scenes[0]); log('✅ GLTF/GLB loaded'); res(); }, (err)=>rej(err)));
+        }else if(ext==='fbx'){
+          const obj = fbxLoader.parse(buf,'');
+          placeAndFrame(obj); log('✅ FBX loaded');
+        }else{
+          toast('Unsupported: '+ext); return;
+        }
+        toast('Loaded ✓');
+      }catch(err){
+        console.error('[Load] error', err);
+        log('❌ Load error: '+(err&&err.message?err.message:err));
+        toast('Load failed (see console)');
+      }
+    }
+
+    // Buttons
+    let playing = true;
+    $('pause').addEventListener('click', ()=>{ playing=!playing; setPressed($('pause'), !playing); toast(playing?'Play':'Paused'); });
+    $('toggleBackplate').addEventListener('click', (e)=>{ backplate.visible=!backplate.visible; setPressed(e.currentTarget, backplate.visible); });
+    $('toggleSilhouette').addEventListener('click', (e)=>{ const p=e.currentTarget.getAttribute('aria-pressed')!=='true'; setPressed(e.currentTarget, p); setSilhouette(subject, p); });
+    $('recenter').addEventListener('click', ()=> frameSubject());
+
+    // Loop / resize
+    const clock = new THREE.Clock();
+    function animate(){ requestAnimationFrame(animate); if(playing){ /* animations here if needed */ } renderer.render(scene,camera); }
+    function onResize(){ const w=window.innerWidth||320, h=window.innerHeight||480; camera.aspect=w/h; camera.updateProjectionMatrix(); renderer.setSize(w,h,false); }
+    window.addEventListener('resize', onResize, {passive:true}); onResize(); animate(); log('✅ Ready — use Load Model, Picker API, or drag-drop');
+  }catch(err){
+    console.error(err); log('Error: '+(err.message||err));
+  }
+})();
+</script>
+</body>
+</html>
